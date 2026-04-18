@@ -1,111 +1,121 @@
-# Multi-Container Runtime
+# OS-Jackfruit: Multi-Container Runtime
 
 A lightweight Linux container runtime in C with a long-running supervisor and a kernel-space memory monitor.
 
-Read [`project-guide.md`](project-guide.md) for the full project specification.
+## 1. Team Information
+
+- **Name 1:** V Vyas, **SRN:** PES2UG24CS569
+- **Name 2:** Thejaswi S, **SRN:** PES2UG24CS562
 
 ---
 
-## Getting Started
+## 2. Build, Load, and Run Instructions
 
-### 1. Fork the Repository
-
-1. Go to [github.com/shivangjhalani/OS-Jackfruit](https://github.com/shivangjhalani/OS-Jackfruit)
-2. Click **Fork** (top-right)
-3. Clone your fork:
-
-```bash
-git clone https://github.com/<your-username>/OS-Jackfruit.git
-cd OS-Jackfruit
-```
-
-### 2. Set Up Your VM
-
-You need an **Ubuntu 22.04 or 24.04** VM with **Secure Boot OFF**. WSL will not work.
-
-Install dependencies:
+### Prerequisites (Fresh Ubuntu 22.04/24.04 VM)
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential linux-headers-$(uname -r)
+sudo apt install -y build-essential wget tar linux-headers-$(uname -r)
 ```
 
-### 3. Run the Environment Check
+### Download Alpine Base Rootfs
 
 ```bash
-cd boilerplate
-chmod +x environment-check.sh
-sudo ./environment-check.sh
+cd ~/OS-Jackfruit-main
+wget https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/x86_64/alpine-minirootfs-3.19.1-x86_64.tar.gz
+mkdir -p rootfs-base
+sudo tar -xzf alpine-minirootfs-3.19.1-x86_64.tar.gz -C rootfs-base
 ```
 
-Fix any issues reported before moving on.
-
-### 4. Prepare the Root Filesystem
+### Building the Project
 
 ```bash
-mkdir rootfs-base
-wget https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-tar -xzf alpine-minirootfs-3.20.3-x86_64.tar.gz -C rootfs-base
-
-# Make one writable copy per container you plan to run
-cp -a ./rootfs-base ./rootfs-alpha
-cp -a ./rootfs-base ./rootfs-beta
+cd ~/OS-Jackfruit-main
+make -C boilerplate
 ```
 
-Do not commit `rootfs-base/` or `rootfs-*` directories to your repository.
+This builds:
+- `engine` — The container runtime (supervisor + CLI)
+- `cpu_hog` — CPU-bound workload for scheduling experiments
+- `memory_hog` — Memory allocation workload
+- `io_pulse` — I/O-bound workload
+- `monitor.ko` — Kernel module for memory monitoring
 
-### 5. Understand the Boilerplate
-
-The `boilerplate/` folder contains starter files:
-
-| File                   | Purpose                                             |
-| ---------------------- | --------------------------------------------------- |
-| `engine.c`             | User-space runtime and supervisor skeleton          |
-| `monitor.c`            | Kernel module skeleton                              |
-| `monitor_ioctl.h`      | Shared ioctl command definitions                    |
-| `Makefile`             | Build targets for both user-space and kernel module |
-| `cpu_hog.c`            | CPU-bound test workload                             |
-| `io_pulse.c`           | I/O-bound test workload                             |
-| `memory_hog.c`         | Memory-consuming test workload                      |
-| `environment-check.sh` | VM environment preflight check                      |
-
-Use these as your starting point. You are free to restructure the repository however you want — the submission requirements are listed in the project guide.
-
-### 6. Build and Verify
+### Loading the Kernel Module
 
 ```bash
-cd boilerplate
-make
+sudo insmod boilerplate/monitor.ko
+ls -l /dev/container_monitor
 ```
 
-If this compiles without errors, your environment is ready.
-
-### 7. GitHub Actions Smoke Check
-
-Your fork will inherit a minimal GitHub Actions workflow from this repository.
-
-That workflow only performs CI-safe checks:
-
-- `make -C boilerplate ci`
-- user-space binary compilation (`engine`, `memory_hog`, `cpu_hog`, `io_pulse`)
-- `./boilerplate/engine` with no arguments must print usage and exit with a non-zero status
-
-The CI-safe build command is:
+### Preparing Root Filesystems
 
 ```bash
-make -C boilerplate ci
+cd ~/OS-Jackfruit-main
+
+sudo cp -a rootfs-base rootfs-alpha
+sudo cp -a rootfs-base rootfs-beta
+
+sudo cp boilerplate/cpu_hog boilerplate/memory_hog boilerplate/io_pulse ./rootfs-alpha/
+sudo cp boilerplate/cpu_hog boilerplate/memory_hog boilerplate/io_pulse ./rootfs-beta/
 ```
 
-This smoke check does not test kernel-module loading, supervisor runtime behavior, or container execution.
+### Running the Supervisor (Terminal 1)
 
----
+```bash
+cd ~/OS-Jackfruit-main/boilerplate
+sudo ./engine supervisor ../rootfs-base
+```
 
-## What to Do Next
+### CLI Commands (Terminal 2)
 
-Read [`project-guide.md`](project-guide.md) end to end. It contains:
+```bash
+cd ~/OS-Jackfruit-main/boilerplate
 
-- The six implementation tasks (multi-container runtime, CLI, logging, kernel monitor, scheduling experiments, cleanup)
-- The engineering analysis you must write
-- The exact submission requirements, including what your `README.md` must contain (screenshots, analysis, design decisions)
+# Start a container in background
+sudo ./engine start alpha ../rootfs-alpha /cpu_hog
 
-Your fork's `README.md` should be replaced with your own project documentation as described in the submission package section of the project guide. (As in get rid of all the above content and replace with your README.md)
+# Start a container and wait for it to exit
+sudo ./engine run alpha ../rootfs-alpha /cpu_hog
+
+# List tracked containers
+sudo ./engine ps
+
+# View container logs
+sudo ./engine logs alpha
+
+# Stop a running container
+sudo ./engine stop alpha
+```
+
+### With Memory Limits
+
+```bash
+sudo ./engine start alpha ../rootfs-alpha /memory_hog --soft-mib 48 --hard-mib 80
+```
+
+### With Nice Value (Scheduling)
+
+```bash
+sudo ./engine start alpha ../rootfs-alpha /cpu_hog --nice -10
+```
+
+### Running Scheduling Experiments
+
+```bash
+# Experiment A: CPU vs CPU with different priorities
+sudo ./engine start high_prio ../rootfs-alpha /cpu_hog --nice -20
+sudo ./engine start low_prio ../rootfs-beta /cpu_hog --nice 19
+
+# Experiment B: CPU-bound vs I/O-bound at same priority
+sudo ./engine start cpu_work ../rootfs-alpha /cpu_hog --nice 0
+sudo ./engine start io_work ../rootfs-beta /io_pulse --nice 0
+```
+
+### Clean Up
+
+```bash
+# Stop supervisor with Ctrl+C in Terminal 1
+# Then in Terminal 2:
+sudo rmmod monitor
+```
